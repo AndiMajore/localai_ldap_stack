@@ -1,10 +1,7 @@
 # Dynamic routing. Go-templated by Traefik: {{ env "X" }} reads the container environment.
 {{ $domain := env "DOMAIN" }}
-{{/* TRAEFIK_TLS=false: Traefik serves plain HTTP on :80 (dev mode, or behind an external
-     TLS-terminating proxy such as Apache). PUBLIC_SCHEME is the scheme clients see. */}}
-{{ $tls := ne (env "TRAEFIK_TLS") "false" }}
+{{/* PUBLIC_SCHEME is the scheme clients see: https behind Apache, http in dev. */}}
 {{ $publicHttps := ne (env "PUBLIC_SCHEME") "http" }}
-{{ $ep := "web" }}{{ if $tls }}{{ $ep = "websecure" }}{{ end }}
 http:
   routers:
     # 1) Generative / non-goal endpoints are never exposed, even though LocalAI
@@ -12,35 +9,31 @@ http:
     ai-blocked:
       rule: "Host(`ai.{{ $domain }}`) && (PathRegexp(`^/(v1/)?(chat|completions|edits|messages|responses|engines|images|audio|tts|text-to-speech|vad|detection|face|voice|video|3d|sound-generation|realtime|mcp|tokenize|detokenize|moderations|stores)(/|$)`) || PathPrefix(`/api/fine-tuning`) || PathPrefix(`/api/quantization`) || PathPrefix(`/api/pii`) || PathPrefix(`/api/voice-profiles`) || PathPrefix(`/api/agents`))"
       priority: 1000
-      entryPoints: [{{ $ep }}]
+      entryPoints: [web]
       middlewares: [deny-all]
       service: localai
-      {{ if $tls }}tls: {}{{ end }}
 
     # 2) The inference API: embeddings, rerank, decisions. Rate-limited per API key.
     ai-api:
       rule: "Host(`ai.{{ $domain }}`) && (Path(`/v1/embeddings`) || Path(`/embeddings`) || Path(`/v1/rerank`) || Path(`/v1/systemone`) || PathPrefix(`/v1/systemone/`))"
       priority: 500
-      entryPoints: [{{ $ep }}]
+      entryPoints: [web]
       middlewares: [api-ratelimit, api-bodylimit, secure-headers]
       service: localai
-      {{ if $tls }}tls: {}{{ end }}
 
     # 3) Everything else on ai.<domain>: LocalAI web UI (SSO login, API key management),
     #    /v1/models, auth endpoints, admin pages (admin role enforced by LocalAI).
     ai-ui:
       rule: Host(`ai.{{ $domain }}`)
       priority: 10
-      entryPoints: [{{ $ep }}]
+      entryPoints: [web]
       middlewares: [secure-headers]
       service: localai
-      {{ if $tls }}tls: {}{{ end }}
 
     auth:
       rule: Host(`auth.{{ $domain }}`)
-      entryPoints: [{{ $ep }}]
+      entryPoints: [web]
       service: authentik
-      {{ if $tls }}tls: {}{{ end }}
 
   middlewares:
     deny-all:
@@ -63,7 +56,7 @@ http:
     secure-headers:
       headers:
         stsSeconds: {{ if $publicHttps }}31536000{{ else }}0{{ end }}
-        # Behind a TLS-terminating proxy Traefik itself sees plain HTTP; send HSTS anyway.
+        # Traefik itself only sees plain HTTP from Apache; send HSTS based on the public scheme.
         forceSTSHeader: {{ $publicHttps }}
         contentTypeNosniff: true
         referrerPolicy: same-origin
@@ -78,15 +71,3 @@ http:
       loadBalancer:
         servers:
           - url: http://authentik-server:9000
-
-{{ if $tls }}
-tls:
-  stores:
-    default:
-      defaultCertificate:
-        certFile: /certs/stack.crt
-        keyFile: /certs/stack.key
-  options:
-    default:
-      minVersion: VersionTLS12
-{{ end }}

@@ -1,6 +1,6 @@
 # Local development override. Adds on top of the production docker-compose.yml:
 #   - a test OpenLDAP directory (users alice, bob, carol), seeded on start
-#   - plain HTTP on port 80 (no TLS, no certificates needed)
+#   - no Apache: Traefik serves plain HTTP directly on port 80 (no certificates needed)
 #   - laptop sizing (small model set, at most 2 models loaded, 10 min idle unload)
 #
 # Run from the repository root (paths below are relative to it):
@@ -49,12 +49,11 @@ services:
     networks: [backend]
 
   traefik:
-    command: --configFile=/etc/traefik/traefik.http.yml
     environment:
-      TRAEFIK_TLS: "false"
       PUBLIC_SCHEME: http
-    volumes:
-      - ./dev/traefik/traefik.http.yml:/etc/traefik/traefik.http.yml:ro
+    # No Apache in dev: publish Traefik directly on port 80.
+    ports: !override
+      - "80:80"
 
   authentik-server:
     environment:

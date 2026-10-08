@@ -4,7 +4,8 @@
 Used for automated testing of the auth chain without a browser:
     dev/scripts/sso-login.py alice "$LDAP_SEED_USER_PASSWORD"            # prints a new API key
     dev/scripts/sso-login.py bob   "$LDAP_SEED_USER_PASSWORD" --expect-denied
-Uses http:// (dev mode) by default; set SCHEME=https to test an HTTPS deployment.
+Uses http:// (dev mode) by default; set SCHEME=https to test an HTTPS deployment
+(and REQUESTS_CA_BUNDLE=/path/ca.crt if its certificate comes from an internal CA).
 Requires: python3 with `requests`.
 """
 import argparse
@@ -78,8 +79,6 @@ def main() -> int:
     scheme = os.environ.get("SCHEME", "http")
     ai, auth = f"{scheme}://ai.{domain}", f"{scheme}://auth.{domain}"
     s = requests.Session()
-    if scheme == "https" and (ROOT / "certs/ca/ca.crt").exists():
-        s.verify = str(ROOT / "certs/ca/ca.crt")
 
     try:
         follow(s, f"{ai}/api/auth/oidc/login", auth, args.username, args.password)

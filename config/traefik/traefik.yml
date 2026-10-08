@@ -1,13 +1,13 @@
-# Static Traefik configuration when a TLS-terminating reverse proxy (e.g. Apache) sits in
-# front (compose.behind-proxy.yml). Traefik speaks plain HTTP and is only reachable from
-# the host itself (published on 127.0.0.1).
+# Static Traefik configuration. Traefik speaks plain HTTP: in production, Apache on the host
+# terminates HTTPS and forwards to 127.0.0.1:${TRAEFIK_HTTP_PORT}; in dev, port 80 is published
+# directly. Routes and middlewares live in dynamic/routes.yml.
 entryPoints:
   web:
     address: ":80"
-    # Trust X-Forwarded-Proto/-For/-Host from the front proxy. Without this, Traefik would
-    # overwrite X-Forwarded-Proto with "http" and Authentik/LocalAI would build http:// URLs.
+    # Trust X-Forwarded-Proto/-For/-Host from Apache. Without this, Traefik would overwrite
+    # X-Forwarded-Proto with "http" and Authentik/LocalAI would build http:// URLs.
     # Connections from the host arrive via Docker's bridge gateway, i.e. from a private address;
-    # the port is bound to 127.0.0.1, so nothing else can reach it.
+    # in production the port is bound to 127.0.0.1, so nothing else can reach it.
     forwardedHeaders:
       trustedIPs:
         - "127.0.0.1/32"

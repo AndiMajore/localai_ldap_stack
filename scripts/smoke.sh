@@ -3,6 +3,7 @@
 #   API_KEY=<key created in the LocalAI UI> scripts/smoke.sh
 #   SCHEME=http ... for the plain-HTTP dev mode (dev/compose.dev.yml).
 #   DECISION_MODELS="..." to choose which decision models to test.
+#   CURL_CA_BUNDLE=/path/ca.crt if Apache's certificate comes from an internal CA.
 # Optional: REVOKED_KEY=<a paused/revoked key> to check it is rejected.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -10,8 +11,6 @@ DOMAIN="${DOMAIN:-$(grep -E '^DOMAIN=' .env | cut -d= -f2)}"
 SCHEME="${SCHEME:-https}"
 BASE="${SCHEME}://ai.${DOMAIN}"
 CURL=(curl -sS -o /tmp/smoke-body.$$ -w '%{http_code}')
-# Self-signed dev/internal CA, if present (dev/scripts/gen-certs.sh or certs/ca/).
-[[ "$SCHEME" == https && -f certs/ca/ca.crt ]] && CURL+=(--cacert certs/ca/ca.crt)
 EMBED_MODEL="${EMBED_MODEL:-bge-m3}"
 RERANK_MODEL="${RERANK_MODEL:-bge-reranker-v2-m3}"
 DECISION_MODELS="${DECISION_MODELS:-laya-llama-cpp kev-4b-llama-cpp}"

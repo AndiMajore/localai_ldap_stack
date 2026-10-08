@@ -1,8 +1,10 @@
 name: embedder-stack
 
-# Production stack. Only Traefik publishes ports. Everything else talks over the "backend"
-# network. Traefik also answers on that network under the public hostnames, so LocalAI can
-# reach the OIDC issuer at https://auth.${DOMAIN} from inside the stack.
+# Production stack, running behind an Apache vhost on the host that terminates HTTPS:
+#
+#   client ──https──► Apache :443 (your certificates) ──http──► 127.0.0.1:${TRAEFIK_HTTP_PORT} Traefik ──► stack
+#
+# Example vhost: config/apache/embedder-stack.conf.example. Only Traefik publishes a port.
 # Users come from your LDAP/AD (configured via the LDAP_* variables in .env).
 # Local development: see dev/README.md (adds a test OpenLDAP, plain HTTP, laptop sizing).
 
@@ -40,25 +42,22 @@ services:
     command: --configFile=/etc/traefik/traefik.yml
     environment:
       DOMAIN: ${DOMAIN}
+      # The scheme clients see (Apache serves https); drives HSTS.
+      PUBLIC_SCHEME: https
       API_RATE_AVERAGE: ${API_RATE_AVERAGE:-20}
       API_RATE_BURST: ${API_RATE_BURST:-60}
+    # Only reachable from the host itself; Apache forwards to this port.
     ports:
-      - "80:80"
-      - "443:443"
+      - "127.0.0.1:${TRAEFIK_HTTP_PORT:-8081}:80"
     volumes:
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
-      - ./certs:/certs:ro
+      - ./config/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/traefik/dynamic:/etc/traefik/dynamic:ro
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      backend:
-        aliases:
-          - ai.${DOMAIN}
-          - auth.${DOMAIN}
+    networks: [backend]
 
   postgres:
     image: docker.io/library/postgres:16-alpine
@@ -70,7 +69,7 @@ services:
       LOCALAI_DB_PASS: ${LOCALAI_DB_PASS:?LOCALAI_DB_PASS required}
     volumes:
       - postgres:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./config/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
       interval: 10s
@@ -87,7 +86,7 @@ services:
     environment: *authentik-env
     volumes:
       - authentik-data:/data
-      - ./authentik/blueprints:/blueprints/custom:ro
+      - ./config/authentik/blueprints:/blueprints/custom:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,7 +100,7 @@ services:
     environment: *authentik-env
     volumes:
       - authentik-data:/data
-      - ./authentik/blueprints:/blueprints/custom:ro
+      - ./config/authentik/blueprints:/blueprints/custom:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,14 +114,14 @@ services:
     command: ["apply_blueprint", "custom/embedder-stack.yaml"]
     environment: *authentik-env
     volumes:
-      - ./authentik/blueprints:/blueprints/custom:ro
+      - ./config/authentik/blueprints:/blueprints/custom:ro
     depends_on:
       authentik-worker:
         condition: service_healthy
     networks: [backend]
 
   localai-seed-models:
-    # One-shot: copies the default model configs from localai/models/ into the models volume,
+    # One-shot: copies the default model configs from config/localai/models/ into the models volume,
     # but only those not present yet (or empty). LocalAI rewrites configs in place (UI edits, artifact
     # pinning), so they must be normal files in the volume, not bind mounts.
     # To reset one to the repo version: delete it in the LocalAI UI (or the volume) and `up` again.
@@ -130,7 +129,7 @@ services:
     restart: "no"
     command: ["sh", "-c", "for f in /seed/*.yaml; do t=/models/$$(basename $$f); [ -s $$t ] && echo \"keep $$t\" || { cp $$f $$t && echo \"seeded $$t\"; }; done"]
     volumes:
-      - ./localai/models:/seed:ro
+      - ./config/localai/models:/seed:ro
       - localai-models:/models
     networks: [backend]
 
@@ -160,20 +159,20 @@ services:
       LOCALAI_WATCHDOG_IDLE: "true"
       LOCALAI_WATCHDOG_IDLE_TIMEOUT: ${LOCALAI_WATCHDOG_IDLE_TIMEOUT:-20m}
       LOCALAI_MAX_ACTIVE_BACKENDS: ${LOCALAI_MAX_ACTIVE_BACKENDS:-4}
-      # Gallery models installed on start (decision models), see localai/preload/server.yaml.
+      # Gallery models installed on start (decision models), see config/localai/preload/server.yaml.
       LOCALAI_PRELOAD_MODELS_CONFIG: /preload/server.yaml
       # Concrete backend variants installed on boot (must match LOCALAI_TAG's GPU flavour).
       LOCALAI_EXTERNAL_BACKENDS: ${LOCALAI_BACKENDS:-cuda12-transformers,cuda12-rerankers,cuda12-llama-cpp-development}
-      # Extra CA certificates (e.g. an internal CA that signed the certs) placed in certs/ca/
-      # are trusted in addition to the system bundle.
+      # Extra CA certificates in config/ca/ (e.g. an internal CA that signed Apache's
+      # certificate) are trusted in addition to the system bundle.
       SSL_CERT_DIR: /etc/ssl/certs:/stack-ca
     volumes:
       - localai-models:/models
       - localai-backends:/backends
       - localai-data:/data
       - hf-cache:/root/.cache/huggingface
-      - ./localai/preload:/preload:ro
-      - ./certs/ca:/stack-ca:ro
+      - ./config/localai/preload:/preload:ro
+      - ./config/ca:/stack-ca:ro
     deploy:
       resources:
         reservations:
@@ -181,6 +180,11 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # LocalAI fetches the OIDC configuration from https://auth.<domain> at startup and on login.
+    # That request goes through Apache on the host (which has the real certificate). Needs Apache
+    # to listen on the Docker bridge too (e.g. *:443) and the host firewall to allow it.
+    extra_hosts:
+      - "auth.${DOMAIN}:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/readyz"]
       interval: 30s

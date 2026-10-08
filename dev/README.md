@@ -6,7 +6,8 @@ Everything in this folder is for running the stack on a workstation. It is not u
 
 - **A test LDAP directory** (`openldap`) with the users `alice`, `bob` and `carol`, plus `ldap-seed`, which sets
   their passwords on start.
-- **Plain HTTP** on port 80, so no certificates are needed (`http://ai.localtest.me`, `http://auth.localtest.me`).
+- **No Apache**: Traefik is published directly on port 80 and serves plain HTTP, so no certificates are needed
+  (`http://ai.localtest.me`, `http://auth.localtest.me`).
 - **Laptop sizing**: a small decision-model set (`dev/localai/preload/laptop.yaml`), at most 2 models loaded, 10 min
   idle unload.
 
@@ -57,15 +58,18 @@ API_KEY=$(dev/scripts/sso-login.py alice "$PW") SCHEME=http scripts/smoke.sh
 dev/scripts/sso-login.py bob "$PW" --expect-denied      # not in ai-api-users
 ```
 
-## Self-signed certificates
+## Testing the Apache setup locally
 
-`dev/scripts/gen-certs.sh` creates a local CA and a certificate for `ai.$DOMAIN` / `auth.$DOMAIN` in `certs/`. Use it to
-run the production configuration (HTTPS, without `dev/compose.dev.yml`) on a test or staging machine before real
-certificates exist. Clients then need to trust `certs/ca/ca.crt`. LocalAI trusts it automatically.
+To check changes to the production setup (Apache in front, https), run `docker-compose.yml` without the dev override
+behind a local Apache, e.g. the `httpd:2.4` image with `--network host` and the vhost from
+`config/apache/embedder-stack.conf.example`, with a self-signed certificate for `ai.localtest.me` / `auth.localtest.me`.
+Put the self-signed CA into `config/ca/` so LocalAI trusts it, and run the test scripts with
+`SCHEME=https CURL_CA_BUNDLE=<ca.crt> REQUESTS_CA_BUNDLE=<ca.crt>`. You still need the test directory, so keep the
+`openldap` / `ldap-seed` services from `dev/compose.dev.yml` in a small extra override.
 
 ## Troubleshooting
 
-- **Login loops back to the email/username page after switching between HTTPS and HTTP**: the browser still holds
+- **Login loops back to the email/username page after switching between HTTPS (Apache test) and HTTP (dev)**: the browser still holds
   Authentik's `Secure` session cookie from the HTTPS run, and browsers won't let an http:// page replace it. Delete
   the site data for `localtest.me` (Chrome: `chrome://settings/content/all?searchSubpage=localtest.me`), or use a
   private window.

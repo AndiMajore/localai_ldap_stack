@@ -1,4 +1,4 @@
-# Apache vhosts for the embedder stack behind an existing Apache (compose.behind-proxy.yml).
+# Apache vhosts for the embedder stack (see README: "Setup").
 # Requires Apache >= 2.4.47 (for "upgrade=websocket") and the modules:
 #   ssl, proxy, proxy_http, headers, rewrite   (Debian/Ubuntu: a2enmod ssl proxy proxy_http headers rewrite)
 # Replace example.org, the certificate paths and, if changed, the port 8081 (TRAEFIK_HTTP_PORT).
