@@ -1,0 +1,50 @@
+# Apache vhosts for the embedder stack behind an existing Apache (compose.behind-proxy.yml).
+# Requires Apache >= 2.4.47 (for "upgrade=websocket") and the modules:
+#   ssl, proxy, proxy_http, headers, rewrite   (Debian/Ubuntu: a2enmod ssl proxy proxy_http headers rewrite)
+# Replace example.org, the certificate paths and, if changed, the port 8081 (TRAEFIK_HTTP_PORT).
+# Both names (ai. and auth.) must be covered by the certificate(s).
+
+<VirtualHost *:443>
+    ServerName ai.example.org
+
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/ai.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/ai.example.org/privkey.pem
+
+    # Traefik routes by host name, and Authentik/LocalAI build their URLs from it.
+    ProxyPreserveHost On
+    # Tell the stack the client used https (Traefik trusts this header from the host).
+    RequestHeader set X-Forwarded-Proto "https"
+    # The first request to a model includes loading it, which can take minutes.
+    ProxyTimeout 600
+    # Embedding batches and decision requests can be large.
+    LimitRequestBody 16777216
+
+    # upgrade=websocket: LocalAI's live log views use WebSockets.
+    ProxyPass        / http://127.0.0.1:8081/ upgrade=websocket
+    ProxyPassReverse / http://127.0.0.1:8081/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName auth.example.org
+
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/auth.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/auth.example.org/privkey.pem
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+    ProxyTimeout 600
+
+    # upgrade=websocket: the Authentik login and admin UI use WebSockets.
+    ProxyPass        / http://127.0.0.1:8081/ upgrade=websocket
+    ProxyPassReverse / http://127.0.0.1:8081/
+</VirtualHost>
+
+# Optional: redirect plain HTTP to HTTPS.
+<VirtualHost *:80>
+    ServerName ai.example.org
+    ServerAlias auth.example.org
+    RewriteEngine on
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</VirtualHost>

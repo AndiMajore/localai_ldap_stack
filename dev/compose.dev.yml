@@ -51,6 +51,7 @@ services:
   traefik:
     command: --configFile=/etc/traefik/traefik.http.yml
     environment:
+      TRAEFIK_TLS: "false"
       PUBLIC_SCHEME: http
     volumes:
       - ./dev/traefik/traefik.http.yml:/etc/traefik/traefik.http.yml:ro

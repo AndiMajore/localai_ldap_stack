@@ -1,8 +1,10 @@
 # Dynamic routing. Go-templated by Traefik: {{ env "X" }} reads the container environment.
 {{ $domain := env "DOMAIN" }}
-{{/* PUBLIC_SCHEME=http (compose.dev-http.yml) serves plain HTTP on :80 without TLS. */}}
-{{ $https := ne (env "PUBLIC_SCHEME") "http" }}
-{{ $ep := "web" }}{{ if $https }}{{ $ep = "websecure" }}{{ end }}
+{{/* TRAEFIK_TLS=false: Traefik serves plain HTTP on :80 (dev mode, or behind an external
+     TLS-terminating proxy such as Apache). PUBLIC_SCHEME is the scheme clients see. */}}
+{{ $tls := ne (env "TRAEFIK_TLS") "false" }}
+{{ $publicHttps := ne (env "PUBLIC_SCHEME") "http" }}
+{{ $ep := "web" }}{{ if $tls }}{{ $ep = "websecure" }}{{ end }}
 http:
   routers:
     # 1) Generative / non-goal endpoints are never exposed, even though LocalAI
@@ -13,7 +15,7 @@ http:
       entryPoints: [{{ $ep }}]
       middlewares: [deny-all]
       service: localai
-      {{ if $https }}tls: {}{{ end }}
+      {{ if $tls }}tls: {}{{ end }}
 
     # 2) The inference API: embeddings, rerank, decisions. Rate-limited per API key.
     ai-api:
@@ -22,7 +24,7 @@ http:
       entryPoints: [{{ $ep }}]
       middlewares: [api-ratelimit, api-bodylimit, secure-headers]
       service: localai
-      {{ if $https }}tls: {}{{ end }}
+      {{ if $tls }}tls: {}{{ end }}
 
     # 3) Everything else on ai.<domain>: LocalAI web UI (SSO login, API key management),
     #    /v1/models, auth endpoints, admin pages (admin role enforced by LocalAI).
@@ -32,13 +34,13 @@ http:
       entryPoints: [{{ $ep }}]
       middlewares: [secure-headers]
       service: localai
-      {{ if $https }}tls: {}{{ end }}
+      {{ if $tls }}tls: {}{{ end }}
 
     auth:
       rule: Host(`auth.{{ $domain }}`)
       entryPoints: [{{ $ep }}]
       service: authentik
-      {{ if $https }}tls: {}{{ end }}
+      {{ if $tls }}tls: {}{{ end }}
 
   middlewares:
     deny-all:
@@ -60,7 +62,9 @@ http:
 
     secure-headers:
       headers:
-        stsSeconds: {{ if $https }}31536000{{ else }}0{{ end }}
+        stsSeconds: {{ if $publicHttps }}31536000{{ else }}0{{ end }}
+        # Behind a TLS-terminating proxy Traefik itself sees plain HTTP; send HSTS anyway.
+        forceSTSHeader: {{ $publicHttps }}
         contentTypeNosniff: true
         referrerPolicy: same-origin
         frameDeny: true
@@ -75,7 +79,7 @@ http:
         servers:
           - url: http://authentik-server:9000
 
-{{ if $https }}
+{{ if $tls }}
 tls:
   stores:
     default:

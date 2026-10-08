@@ -29,6 +29,16 @@ Prerequisites: Docker with the NVIDIA container toolkit, DNS for `ai.<domain>` a
 server, a TLS certificate covering both names, and the connection details of your LDAP/AD
 (see [Connecting your company LDAP / Active Directory](#connecting-your-company-ldap--active-directory)).
 
+There are two ways to run it, depending on who handles HTTPS:
+
+| | Traefik handles HTTPS (standalone) | Behind an existing Apache |
+|---|---|---|
+| Ports 80/443 | Traefik | Apache; Traefik only on `127.0.0.1:8081` |
+| Certificates | `certs/stack.crt` + `certs/stack.key` | in the Apache vhost, as usual |
+| Start with | `docker compose up -d` | `docker compose -f docker-compose.yml -f compose.behind-proxy.yml up -d` |
+
+### Standalone
+
 ```bash
 cp .env.example .env
 scripts/gen-secrets.sh        # fills the empty secrets in .env
@@ -36,6 +46,46 @@ $EDITOR .env                  # DOMAIN, LDAP_*, LOCALAI_ADMIN_EMAIL, image tags
 cp /path/to/fullchain.pem certs/stack.crt && cp /path/to/privkey.pem certs/stack.key
 docker compose up -d
 ```
+
+### Behind an existing Apache
+
+Apache terminates HTTPS with your usual certificates and forwards both hostnames to Traefik, which then only listens on
+`127.0.0.1:${TRAEFIK_HTTP_PORT}` (default 8081). Traefik keeps doing the stack-specific work (blocking chat endpoints,
+per-key rate limits, routing between LocalAI and Authentik), so Apache needs no special rules.
+
+```bash
+cp .env.example .env
+scripts/gen-secrets.sh
+$EDITOR .env                  # as above, plus TRAEFIK_HTTP_PORT if 8081 is taken
+docker compose -f docker-compose.yml -f compose.behind-proxy.yml up -d
+```
+
+Then add the vhosts from [`apache/embedder-stack.conf.example`](apache/embedder-stack.conf.example) (replace the
+domain, certificate paths and port), enable the modules and reload:
+
+```bash
+sudo a2enmod ssl proxy proxy_http headers rewrite
+sudo cp apache/embedder-stack.conf.example /etc/apache2/sites-available/embedder-stack.conf   # then edit
+sudo a2ensite embedder-stack && sudo apachectl configtest && sudo systemctl reload apache2
+```
+
+What the vhost must do (all in the example):
+
+- **`ProxyPreserveHost On`**: Traefik routes by host name, and Authentik/LocalAI build their URLs from it.
+- **`RequestHeader set X-Forwarded-Proto "https"`**: tells the stack the public URL is https. Without it, logins
+  redirect to `http://` URLs and fail.
+- **`upgrade=websocket`** on `ProxyPass` (Apache ≥ 2.4.47): the Authentik UI and LocalAI's live logs use WebSockets.
+- **`ProxyTimeout 600`**: the first request to a model includes loading it, which can take minutes.
+
+Two more things the override handles, which you should know about:
+
+- LocalAI fetches Authentik's login configuration from `https://auth.<domain>` itself. In this mode that request goes
+  **through Apache** (the container resolves `auth.<domain>` to the host). So Apache must also listen on the Docker
+  bridge (`*:443` does), and a host firewall must allow containers to reach port 443 on the host. A certificate from a
+  public CA works out of the box; for one from an internal CA, put the CA certificate into `certs/ca/`.
+- The `certs/` folder is otherwise unused in this mode.
+
+### First start
 
 On first start LocalAI downloads its backends (~15 GB) and the preloaded decision models. That can take a
 while. `docker compose ps` shows `localai` as healthy once the API is up.
@@ -215,5 +265,10 @@ each decision model, and 403 when a user key tries to install a model.
   (already in the blueprint). Check the Authentik server logs.
 - **Users can't log in although they exist in LDAP**: check they are in `API_USERS_GROUP` and that a sync ran since
   (Authentik admin UI → the LDAP source shows the last sync and its errors).
+- **Behind Apache: login ends on an `http://` URL or fails with a redirect/issuer error**: the vhost is missing
+  `RequestHeader set X-Forwarded-Proto "https"` or `ProxyPreserveHost On`.
+- **Behind Apache: `localai` logs OIDC/discovery errors**: LocalAI can't reach `https://auth.<domain>` through Apache.
+  Test with `docker compose exec localai curl -sS https://auth.<domain>/application/o/localai/.well-known/openid-configuration`.
+  Check that Apache listens on `*:443` (not only the public IP), the host firewall, and for an internal CA `certs/ca/`.
 - **`localai` stays in `starting` for a long time** on first boot: it is downloading backends and models
   (`docker compose logs -f localai`).
