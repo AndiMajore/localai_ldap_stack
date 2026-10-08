@@ -1,0 +1,48 @@
+# Dev directory for the embedder stack. {{ LDAP_BASE_DN }} is filled in by the
+# osixia/openldap image. Passwords are set afterwards by ldap/set-passwords.sh.
+
+dn: ou=people,{{ LDAP_BASE_DN }}
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,{{ LDAP_BASE_DN }}
+objectClass: organizationalUnit
+ou: groups
+
+# alice: regular API user
+dn: uid=alice,ou=people,{{ LDAP_BASE_DN }}
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Example
+sn: Example
+givenName: Alice
+mail: alice@example.org
+
+# bob: in the directory but NOT allowed to use the API
+dn: uid=bob,ou=people,{{ LDAP_BASE_DN }}
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Example
+sn: Example
+givenName: Bob
+mail: bob@example.org
+
+# carol: API user and LocalAI admin (see LOCALAI_ADMIN_EMAIL)
+dn: uid=carol,ou=people,{{ LDAP_BASE_DN }}
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Example
+sn: Example
+givenName: Carol
+mail: carol@example.org
+
+dn: cn=ai-api-users,ou=groups,{{ LDAP_BASE_DN }}
+objectClass: groupOfNames
+cn: ai-api-users
+member: uid=alice,ou=people,{{ LDAP_BASE_DN }}
+member: uid=carol,ou=people,{{ LDAP_BASE_DN }}
+
+dn: cn=ai-admins,ou=groups,{{ LDAP_BASE_DN }}
+objectClass: groupOfNames
+cn: ai-admins
+member: uid=carol,ou=people,{{ LDAP_BASE_DN }}

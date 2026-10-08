@@ -1,0 +1,214 @@
+name: embedder-stack
+
+# Production stack. Only Traefik publishes ports. Everything else talks over the "backend"
+# network. Traefik also answers on that network under the public hostnames, so LocalAI can
+# reach the OIDC issuer at https://auth.${DOMAIN} from inside the stack.
+# Users come from your LDAP/AD (configured via the LDAP_* variables in .env).
+# Local development: see dev/README.md (adds a test OpenLDAP, plain HTTP, laptop sizing).
+
+x-authentik-env: &authentik-env
+  AUTHENTIK_POSTGRESQL__HOST: postgres
+  AUTHENTIK_POSTGRESQL__NAME: ${PG_DB:-authentik}
+  AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-authentik}
+  AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS:?PG_PASS required}
+  AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY required}
+  AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?AUTHENTIK_BOOTSTRAP_PASSWORD required}
+  AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-akadmin@example.org}
+  # Read by the blueprint in authentik/blueprints via !Env.
+  DOMAIN: ${DOMAIN}
+  LOCALAI_OIDC_CLIENT_SECRET: ${LOCALAI_OIDC_CLIENT_SECRET:?LOCALAI_OIDC_CLIENT_SECRET required}
+  API_USERS_GROUP: ${API_USERS_GROUP:-ai-api-users}
+  LDAP_URL: ${LDAP_URL:?LDAP_URL required}
+  LDAP_START_TLS: ${LDAP_START_TLS:-false}
+  LDAP_BIND_DN: ${LDAP_BIND_DN:?LDAP_BIND_DN required}
+  LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:?LDAP_BIND_PASSWORD required}
+  LDAP_BASE_DN: ${LDAP_BASE_DN:?LDAP_BASE_DN required}
+  LDAP_USER_DN: ${LDAP_USER_DN:-ou=people}
+  LDAP_GROUP_DN: ${LDAP_GROUP_DN:-ou=groups}
+  LDAP_USER_FILTER: ${LDAP_USER_FILTER:-(objectClass=inetOrgPerson)}
+  LDAP_GROUP_FILTER: ${LDAP_GROUP_FILTER:-(objectClass=groupOfNames)}
+  LDAP_GROUP_MEMBERSHIP_FIELD: ${LDAP_GROUP_MEMBERSHIP_FIELD:-member}
+  LDAP_UNIQUENESS_FIELD: ${LDAP_UNIQUENESS_FIELD:-entryUUID}
+  LDAP_USERNAME_ATTRIBUTE: ${LDAP_USERNAME_ATTRIBUTE:-uid}
+  LDAP_NAME_ATTRIBUTE: ${LDAP_NAME_ATTRIBUTE:-cn}
+  LDAP_MAIL_ATTRIBUTE: ${LDAP_MAIL_ATTRIBUTE:-mail}
+
+services:
+  traefik:
+    image: traefik:${TRAEFIK_TAG:-v3.7.14}
+    restart: unless-stopped
+    command: --configFile=/etc/traefik/traefik.yml
+    environment:
+      DOMAIN: ${DOMAIN}
+      API_RATE_AVERAGE: ${API_RATE_AVERAGE:-20}
+      API_RATE_BURST: ${API_RATE_BURST:-60}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      backend:
+        aliases:
+          - ai.${DOMAIN}
+          - auth.${DOMAIN}
+
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DB:-authentik}
+      POSTGRES_USER: ${PG_USER:-authentik}
+      POSTGRES_PASSWORD: ${PG_PASS:?PG_PASS required}
+      LOCALAI_DB_PASS: ${LOCALAI_DB_PASS:?LOCALAI_DB_PASS required}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [backend]
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    restart: unless-stopped
+    command: server
+    shm_size: 512mb
+    environment: *authentik-env
+    volumes:
+      - authentik-data:/data
+      - ./authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    restart: unless-stopped
+    command: worker
+    shm_size: 512mb
+    environment: *authentik-env
+    volumes:
+      - authentik-data:/data
+      - ./authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  authentik-blueprint:
+    # One-shot: re-applies our blueprint on every `up`, so changes to .env values it reads
+    # (DOMAIN, secrets, PUBLIC_SCHEME) take effect; Authentik itself only re-applies on file changes.
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    restart: "no"
+    command: ["apply_blueprint", "custom/embedder-stack.yaml"]
+    environment: *authentik-env
+    volumes:
+      - ./authentik/blueprints:/blueprints/custom:ro
+    depends_on:
+      authentik-worker:
+        condition: service_healthy
+    networks: [backend]
+
+  localai-seed-models:
+    # One-shot: copies the default model configs from localai/models/ into the models volume,
+    # but only those not present yet (or empty). LocalAI rewrites configs in place (UI edits, artifact
+    # pinning), so they must be normal files in the volume, not bind mounts.
+    # To reset one to the repo version: delete it in the LocalAI UI (or the volume) and `up` again.
+    image: docker.io/library/alpine:3
+    restart: "no"
+    command: ["sh", "-c", "for f in /seed/*.yaml; do t=/models/$$(basename $$f); [ -s $$t ] && echo \"keep $$t\" || { cp $$f $$t && echo \"seeded $$t\"; }; done"]
+    volumes:
+      - ./localai/models:/seed:ro
+      - localai-models:/models
+    networks: [backend]
+
+  localai:
+    image: localai/localai:${LOCALAI_TAG:-master-gpu-nvidia-cuda-12}
+    restart: unless-stopped
+    environment:
+      LOCALAI_BASE_URL: https://ai.${DOMAIN}
+      LOCALAI_MODELS_PATH: /models
+      LOCALAI_BACKENDS_PATH: /backends
+      LOCALAI_DATA_PATH: /data
+      LOCALAI_CONFIG_DIR: /data/configuration
+      # --- auth: OIDC via Authentik, per-user API keys stored in Postgres ---
+      LOCALAI_AUTH: "true"
+      LOCALAI_AUTH_DATABASE_URL: postgres://localai:${LOCALAI_DB_PASS}@postgres:5432/localai?sslmode=disable
+      LOCALAI_OIDC_ISSUER: https://auth.${DOMAIN}/application/o/localai/
+      LOCALAI_OIDC_CLIENT_ID: localai
+      LOCALAI_OIDC_CLIENT_SECRET: ${LOCALAI_OIDC_CLIENT_SECRET}
+      LOCALAI_DISABLE_LOCAL_AUTH: "true"
+      # Authentik already decides who may log in (LDAP group API_USERS_GROUP).
+      LOCALAI_REGISTRATION_MODE: open
+      LOCALAI_ADMIN_EMAIL: ${LOCALAI_ADMIN_EMAIL}
+      # Keys expire unless the user picks another expiry; limits the life of keys
+      # belonging to people later removed from LDAP.
+      LOCALAI_DEFAULT_API_KEY_EXPIRY: ${LOCALAI_DEFAULT_API_KEY_EXPIRY:-180d}
+      # --- model lifecycle ---
+      LOCALAI_WATCHDOG_IDLE: "true"
+      LOCALAI_WATCHDOG_IDLE_TIMEOUT: ${LOCALAI_WATCHDOG_IDLE_TIMEOUT:-20m}
+      LOCALAI_MAX_ACTIVE_BACKENDS: ${LOCALAI_MAX_ACTIVE_BACKENDS:-4}
+      # Gallery models installed on start (decision models), see localai/preload/server.yaml.
+      LOCALAI_PRELOAD_MODELS_CONFIG: /preload/server.yaml
+      # Concrete backend variants installed on boot (must match LOCALAI_TAG's GPU flavour).
+      LOCALAI_EXTERNAL_BACKENDS: ${LOCALAI_BACKENDS:-cuda12-transformers,cuda12-rerankers,cuda12-llama-cpp-development}
+      # Extra CA certificates (e.g. an internal CA that signed the certs) placed in certs/ca/
+      # are trusted in addition to the system bundle.
+      SSL_CERT_DIR: /etc/ssl/certs:/stack-ca
+    volumes:
+      - localai-models:/models
+      - localai-backends:/backends
+      - localai-data:/data
+      - hf-cache:/root/.cache/huggingface
+      - ./localai/preload:/preload:ro
+      - ./certs/ca:/stack-ca:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # First boot downloads several GB of backends before the API starts.
+      start_period: 60m
+      start_interval: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      traefik:
+        condition: service_healthy
+      authentik-server:
+        condition: service_healthy
+      authentik-blueprint:
+        condition: service_completed_successfully
+      localai-seed-models:
+        condition: service_completed_successfully
+    networks: [backend]
+
+networks:
+  backend: {}
+
+volumes:
+  postgres: {}
+  authentik-data: {}
+  localai-models: {}
+  localai-backends: {}
+  localai-data: {}
+  hf-cache: {}

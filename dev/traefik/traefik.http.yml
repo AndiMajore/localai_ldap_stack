@@ -1,0 +1,31 @@
+# Static Traefik configuration for plain-HTTP dev mode (compose.dev-http.yml).
+# Same as traefik.yml, but no HTTPS entrypoint and no http->https redirect.
+entryPoints:
+  web:
+    address: ":80"
+    transport:
+      respondingTimeouts:
+        readTimeout: 10m
+        writeTimeout: 10m
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+ping: {}
+
+api:
+  dashboard: false
+
+log:
+  level: INFO
+
+accessLog:
+  fields:
+    headers:
+      defaultMode: drop
+
+metrics:
+  prometheus:
+    addRoutersLabels: true

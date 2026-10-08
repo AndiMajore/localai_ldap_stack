@@ -1,0 +1,3 @@
+# Small set for an 8 GB GPU / dev machine.
+- id: localai@laya-llama-cpp        # ~450 MB
+- id: localai@kev-4b-llama-cpp      # ~3 GB

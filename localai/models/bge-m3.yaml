@@ -1,0 +1,11 @@
+# Embedding model. Any Hugging Face sentence-transformers repo works the same way:
+# copy this file, change name + parameters.model, then `docker compose up -d` (seeded into the
+# models volume if not present yet). Afterwards edit it in the LocalAI UI.
+name: bge-m3
+backend: transformers
+type: SentenceTransformer
+embeddings: true
+known_usecases:
+  - embeddings
+parameters:
+  model: BAAI/bge-m3

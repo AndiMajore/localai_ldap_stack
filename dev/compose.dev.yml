@@ -1,0 +1,85 @@
+# Local development override. Adds on top of the production docker-compose.yml:
+#   - a test OpenLDAP directory (users alice, bob, carol), seeded on start
+#   - plain HTTP on port 80 (no TLS, no certificates needed)
+#   - laptop sizing (small model set, at most 2 models loaded, 10 min idle unload)
+#
+# Run from the repository root (paths below are relative to it):
+#   docker compose -f docker-compose.yml -f dev/compose.dev.yml up -d
+# The .env must point the LDAP_* settings at the test directory, see dev/.env.example.
+# Never use this outside a local machine: passwords and API keys travel unencrypted.
+
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    restart: unless-stopped
+    command: --copy-service
+    environment:
+      LDAP_ORGANISATION: ${LDAP_ORGANISATION:-Example Org}
+      LDAP_DOMAIN: ${LDAP_DOMAIN:-example.org}
+      LDAP_BASE_DN: ${LDAP_BASE_DN}
+      # The stack binds as the directory admin, so the bind password is the admin password.
+      LDAP_ADMIN_PASSWORD: ${LDAP_BIND_PASSWORD:?LDAP_BIND_PASSWORD required}
+      LDAP_TLS: "false"
+    volumes:
+      - ./dev/ldap/bootstrap:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b \"$${LDAP_BASE_DN}\" -D \"cn=admin,$${LDAP_BASE_DN}\" -w \"$${LDAP_ADMIN_PASSWORD}\" -s base >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks: [backend]
+
+  ldap-seed:
+    # One-shot: sets the test users' passwords (the bootstrap LDIF carries none).
+    image: osixia/openldap:1.5.0
+    restart: "no"
+    entrypoint: ["/bin/sh", "/seed/set-passwords.sh"]
+    environment:
+      LDAP_BASE_DN: ${LDAP_BASE_DN}
+      LDAP_ADMIN_PASSWORD: ${LDAP_BIND_PASSWORD}
+      LDAP_SEED_USER_PASSWORD: ${LDAP_SEED_USER_PASSWORD:?LDAP_SEED_USER_PASSWORD required}
+    volumes:
+      - ./dev/ldap/set-passwords.sh:/seed/set-passwords.sh:ro
+    depends_on:
+      openldap:
+        condition: service_healthy
+    networks: [backend]
+
+  traefik:
+    command: --configFile=/etc/traefik/traefik.http.yml
+    environment:
+      PUBLIC_SCHEME: http
+    volumes:
+      - ./dev/traefik/traefik.http.yml:/etc/traefik/traefik.http.yml:ro
+
+  authentik-server:
+    environment:
+      PUBLIC_SCHEME: http
+
+  authentik-worker:
+    environment:
+      PUBLIC_SCHEME: http
+    depends_on:
+      ldap-seed:
+        condition: service_completed_successfully
+
+  authentik-blueprint:
+    environment:
+      PUBLIC_SCHEME: http
+
+  localai:
+    environment:
+      LOCALAI_BASE_URL: http://ai.${DOMAIN}
+      LOCALAI_OIDC_ISSUER: http://auth.${DOMAIN}/application/o/localai/
+      LOCALAI_PRELOAD_MODELS_CONFIG: /preload-dev/laptop.yaml
+      LOCALAI_MAX_ACTIVE_BACKENDS: 2
+      LOCALAI_WATCHDOG_IDLE_TIMEOUT: 10m
+    volumes:
+      - ./dev/localai/preload:/preload-dev:ro
+
+volumes:
+  ldap-data: {}
+  ldap-config: {}

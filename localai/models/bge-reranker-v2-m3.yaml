@@ -1,0 +1,9 @@
+# Reranker (cross-encoder) served through the "rerankers" library.
+# Other HF cross-encoders (mxbai-rerank, jina-reranker, ...) work by changing parameters.model.
+name: bge-reranker-v2-m3
+backend: rerankers
+type: cross-encoder
+known_usecases:
+  - rerank
+parameters:
+  model: BAAI/bge-reranker-v2-m3

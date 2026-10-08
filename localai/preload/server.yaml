@@ -1,0 +1,13 @@
+# Decision models installed from the LocalAI gallery on start (idempotent).
+# The llama-cpp entries run on any NVIDIA GPU (and CPU).
+- id: localai@laya-llama-cpp        # Laya, multilingual encoder, ~450 MB, Apache-2.0
+- id: localai@kev-4b-llama-cpp      # kev 4B, ~3 GB, Apache-2.0
+- id: localai@lev-llama-cpp         # lev, ~3 GB, Apache-2.0
+
+# vllm-cpp entries: the CUDA build only supports Blackwell GPUs (RTX 50xx, RTX PRO 6000,
+# B200/GB10). On Blackwell set LOCALAI_TAG=master-gpu-nvidia-cuda-13 and enable:
+# - id: localai@tev1-4b-vllm-cpp          # Together Tev1 4B, ~9.3 GB (license pending upstream)
+# - id: localai@gliner25-decide-vllm-cpp  # GLiNER2.5-Decide, ~2 GB, Apache-2.0
+
+# Non-commercial license (CC-BY-NC-4.0), enable only if that fits your use:
+# - id: localai@nimble-9b-v3-llama-cpp    # Bespoke Nimble 9B, ~6.3 GB

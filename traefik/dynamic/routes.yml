@@ -1,0 +1,88 @@
+# Dynamic routing. Go-templated by Traefik: {{ env "X" }} reads the container environment.
+{{ $domain := env "DOMAIN" }}
+{{/* PUBLIC_SCHEME=http (compose.dev-http.yml) serves plain HTTP on :80 without TLS. */}}
+{{ $https := ne (env "PUBLIC_SCHEME") "http" }}
+{{ $ep := "web" }}{{ if $https }}{{ $ep = "websecure" }}{{ end }}
+http:
+  routers:
+    # 1) Generative / non-goal endpoints are never exposed, even though LocalAI
+    #    would serve them (e.g. Tev1 also answers chat completions).
+    ai-blocked:
+      rule: "Host(`ai.{{ $domain }}`) && (PathRegexp(`^/(v1/)?(chat|completions|edits|messages|responses|engines|images|audio|tts|text-to-speech|vad|detection|face|voice|video|3d|sound-generation|realtime|mcp|tokenize|detokenize|moderations|stores)(/|$)`) || PathPrefix(`/api/fine-tuning`) || PathPrefix(`/api/quantization`) || PathPrefix(`/api/pii`) || PathPrefix(`/api/voice-profiles`) || PathPrefix(`/api/agents`))"
+      priority: 1000
+      entryPoints: [{{ $ep }}]
+      middlewares: [deny-all]
+      service: localai
+      {{ if $https }}tls: {}{{ end }}
+
+    # 2) The inference API: embeddings, rerank, decisions. Rate-limited per API key.
+    ai-api:
+      rule: "Host(`ai.{{ $domain }}`) && (Path(`/v1/embeddings`) || Path(`/embeddings`) || Path(`/v1/rerank`) || Path(`/v1/systemone`) || PathPrefix(`/v1/systemone/`))"
+      priority: 500
+      entryPoints: [{{ $ep }}]
+      middlewares: [api-ratelimit, api-bodylimit, secure-headers]
+      service: localai
+      {{ if $https }}tls: {}{{ end }}
+
+    # 3) Everything else on ai.<domain>: LocalAI web UI (SSO login, API key management),
+    #    /v1/models, auth endpoints, admin pages (admin role enforced by LocalAI).
+    ai-ui:
+      rule: Host(`ai.{{ $domain }}`)
+      priority: 10
+      entryPoints: [{{ $ep }}]
+      middlewares: [secure-headers]
+      service: localai
+      {{ if $https }}tls: {}{{ end }}
+
+    auth:
+      rule: Host(`auth.{{ $domain }}`)
+      entryPoints: [{{ $ep }}]
+      service: authentik
+      {{ if $https }}tls: {}{{ end }}
+
+  middlewares:
+    deny-all:
+      # Nothing originates from 127.0.0.1 inside Traefik's view, so this always answers 403.
+      ipAllowList:
+        sourceRange: ["127.0.0.1/32"]
+
+    api-ratelimit:
+      rateLimit:
+        average: {{ env "API_RATE_AVERAGE" | default "20" }}
+        burst: {{ env "API_RATE_BURST" | default "60" }}
+        period: 1s
+        sourceCriterion:
+          requestHeaderName: Authorization
+
+    api-bodylimit:
+      buffering:
+        maxRequestBodyBytes: 16777216
+
+    secure-headers:
+      headers:
+        stsSeconds: {{ if $https }}31536000{{ else }}0{{ end }}
+        contentTypeNosniff: true
+        referrerPolicy: same-origin
+        frameDeny: true
+
+  services:
+    localai:
+      loadBalancer:
+        servers:
+          - url: http://localai:8080
+    authentik:
+      loadBalancer:
+        servers:
+          - url: http://authentik-server:9000
+
+{{ if $https }}
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/stack.crt
+        keyFile: /certs/stack.key
+  options:
+    default:
+      minVersion: VersionTLS12
+{{ end }}
